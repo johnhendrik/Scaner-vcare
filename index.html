@@ -149,18 +149,29 @@
             position: relative;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
             margin-bottom: 10px;
-            min-height: 220px;
+            min-height: 260px;
+            cursor: pointer;
         }
 
         #reader {
             width: 100% !important;
+            min-height: 260px !important;
             border: none !important;
             background: #000;
+            position: relative;
         }
 
         #reader video {
+            width: 100% !important;
+            height: 100% !important;
+            min-height: 260px !important;
             object-fit: cover !important;
             border-radius: 12px;
+            display: block !important;
+        }
+
+        #reader__scan_region {
+            min-height: 260px !important;
         }
 
         /* Laser Animation Overlay */
@@ -762,52 +773,91 @@
                 }
             }
 
-            // 4. START CAMERA SCANNER (HTTPS NATIVE RESMI)
+            // Watchdog untuk memastikan video iOS Safari / WebKit tidak ter-pause atau blank
+            function ensureVideoPlaying() {
+                const video = document.querySelector('#reader video');
+                if (video) {
+                    video.setAttribute('playsinline', 'true');
+                    video.setAttribute('webkit-playsinline', 'true');
+                    video.muted = true;
+                    video.style.display = 'block';
+                    video.style.width = '100%';
+                    video.style.height = '100%';
+                    video.style.objectFit = 'cover';
+                    if (video.paused) {
+                        video.play().catch(e => console.warn('Video play error:', e));
+                    }
+                }
+            }
+
+            const vpCard = document.querySelector('.viewport-card');
+            if (vpCard) {
+                vpCard.addEventListener('click', () => ensureVideoPlaying());
+            }
+
+            // 4. START CAMERA SCANNER (HTTPS NATIVE RESMI - ANTI BLANK IOS SAFARI)
             async function initScanner() {
                 const config = {
-                    fps: 15,
-                    qrbox: { width: 280, height: 180 },
-                    aspectRatio: 1.333333
+                    fps: 20,
+                    qrbox: (w, h) => {
+                        const min = Math.min(w, h);
+                        return { width: Math.floor(min * 0.8), height: Math.floor(min * 0.65) };
+                    }
                 };
 
                 try {
                     html5QrCode = new Html5Qrcode("reader");
 
-                    // Start kamera belakang (environment) secara native
+                    // 1. Ambil list kamera
+                    try {
+                        cameraList = await Html5Qrcode.getCameras();
+                    } catch (_) {}
+
+                    // 2. Pilih kamera belakang secara spesifik jika ada (Anti-Black Screen iOS)
+                    let targetCamera = { facingMode: "environment" };
+                    if (cameraList && cameraList.length > 0) {
+                        const backCam = cameraList.find(c => /back|rear|belakang/i.test(c.label)) || cameraList[cameraList.length - 1];
+                        currentCameraId = backCam.id;
+                        targetCamera = currentCameraId;
+                    }
+
                     await html5QrCode.start(
-                        { facingMode: "environment" },
+                        targetCamera,
                         config,
                         (decodedText) => handleBarcodeDetected(decodedText),
-                        () => {} // silent
+                        () => {} // silent frame error
                     );
+
+                    // Watchdog loop untuk iOS Safari agar video frame langsung menyala
+                    setTimeout(ensureVideoPlaying, 100);
+                    setTimeout(ensureVideoPlaying, 400);
+                    setTimeout(ensureVideoPlaying, 1000);
+                    setTimeout(ensureVideoPlaying, 2000);
 
                     if (camLoading) camLoading.style.display = 'none';
                     resultText.textContent = "Kamera aktif, siap scan...";
                     resultStatus.textContent = "Siap";
                     resultStatus.className = "result-status";
 
-                    try {
-                        cameraList = await Html5Qrcode.getCameras();
-                    } catch (_) {}
+                    if (!cameraList || cameraList.length <= 1) {
+                        try { cameraList = await Html5Qrcode.getCameras(); } catch (_) {}
+                    }
                 } catch (e) {
-                    console.error("Camera direct start error, coba fallback getCameras:", e);
+                    console.error("Camera direct start error, coba fallback facingMode:", e);
                     try {
-                        cameraList = await Html5Qrcode.getCameras();
-                        if (cameraList && cameraList.length > 0) {
-                            const backCam = cameraList.find(c => /back|rear|belakang|environment/i.test(c.label)) || cameraList[cameraList.length - 1];
-                            currentCameraId = backCam.id;
-                            await html5QrCode.start(
-                                currentCameraId,
-                                config,
-                                (decodedText) => handleBarcodeDetected(decodedText),
-                                () => {}
-                            );
-                            if (camLoading) camLoading.style.display = 'none';
-                            resultText.textContent = "Kamera aktif, siap scan...";
-                            resultStatus.textContent = "Siap";
-                            resultStatus.className = "result-status";
-                            return;
-                        }
+                        await html5QrCode.start(
+                            { facingMode: "environment" },
+                            { fps: 20 },
+                            (decodedText) => handleBarcodeDetected(decodedText),
+                            () => {}
+                        );
+                        setTimeout(ensureVideoPlaying, 200);
+                        setTimeout(ensureVideoPlaying, 800);
+                        if (camLoading) camLoading.style.display = 'none';
+                        resultText.textContent = "Kamera aktif, siap scan...";
+                        resultStatus.textContent = "Siap";
+                        resultStatus.className = "result-status";
+                        return;
                     } catch (err2) {
                         console.error("Camera fallback failed:", err2);
                     }
@@ -817,7 +867,7 @@
                             <span style="font-size: 28px;">📷🚫</span>
                             <span style="font-weight: 700; color: #f87171;">Izin Kamera Belum Diberikan</span>
                             <span style="font-size: 11px; color: #94a3b8; text-align: center; padding: 0 16px;">
-                                Klik ikon gembok/setelan di address bar browser untuk mengizinkan kamera, lalu refresh halaman ini.
+                                Klik ikon perizinan browser di address bar untuk mengizinkan kamera, lalu refresh halaman ini.
                             </span>
                         `;
                     }
@@ -978,7 +1028,12 @@
 
             // 9. SWITCH CAMERA
             btnSwitchCam.addEventListener('click', async () => {
-                if (!html5QrCode || cameraList.length <= 1) {
+                if (!html5QrCode) return;
+                try {
+                    cameraList = await Html5Qrcode.getCameras();
+                } catch (_) {}
+
+                if (!cameraList || cameraList.length <= 1) {
                     alert("Hanya ada 1 kamera terdeteksi di perangkat ini.");
                     return;
                 }
@@ -989,10 +1044,12 @@
                 await html5QrCode.stop();
                 await html5QrCode.start(
                     currentCameraId,
-                    { fps: 15, qrbox: { width: 280, height: 180 }, aspectRatio: 1.333333 },
+                    { fps: 20 },
                     (decodedText) => handleBarcodeDetected(decodedText),
                     () => {}
                 );
+                setTimeout(ensureVideoPlaying, 100);
+                setTimeout(ensureVideoPlaying, 500);
             });
 
             // 10. OCR MODE TOGGLE
